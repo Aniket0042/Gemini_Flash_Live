@@ -20,6 +20,8 @@ import uvicorn
 from google import genai
 from google.genai import types
 
+from rag import get_rag_engine
+
 load_dotenv()
 
 app = FastAPI(title="Gemini Flash Live Playground")
@@ -29,6 +31,14 @@ os.makedirs(STATIC_DIR, exist_ok=True)
 
 DEFAULT_MODEL = os.environ.get("GEMINI_LIVE_MODEL", "models/gemini-3.1-flash-live-preview")
 DEFAULT_VOICE = os.environ.get("GEMINI_VOICE", "Achird")
+
+# Initialize RAG Engine
+rag_engine = None
+try:
+    rag_engine = get_rag_engine()
+    print(f"[*] RAG Engine initialized successfully (Ready: {rag_engine.is_ready})")
+except Exception as e:
+    print(f"[!] Failed to initialize RAG Engine: {e}")
 
 def get_gemini_client(custom_key: Optional[str] = None) -> Optional[genai.Client]:
     api_key = custom_key or os.environ.get("GEMINI_API_KEY")
@@ -51,6 +61,9 @@ async def get_config():
         "masked_key": masked_key,
         "default_model": DEFAULT_MODEL,
         "default_voice": DEFAULT_VOICE,
+        "rag_available": bool(rag_engine and rag_engine.is_ready),
+        "rag_vectors_count": rag_engine.index.ntotal if (rag_engine and rag_engine.index) else 0,
+        "rag_documents_count": len(rag_engine.mapping) if (rag_engine and rag_engine.mapping) else 0,
         "available_models": [
             {
                 "id": "models/gemini-3.1-flash-live-preview",
@@ -117,11 +130,12 @@ async def websocket_live_endpoint(websocket: WebSocket):
 
     model = init_data.get("model") or DEFAULT_MODEL
     voice = init_data.get("voice") or DEFAULT_VOICE
-    system_instruction = init_data.get("system_instruction") or None
+    system_instruction = init_data.get("system_instruction") or ""
     thinking_level = init_data.get("thinking_level", "MINIMAL").upper()
     media_resolution = init_data.get("media_resolution", "MEDIA_RESOLUTION_MEDIUM")
+    rag_mode = bool(init_data.get("rag_mode", True))
 
-    print(f"[*] New Live session requested: Model={model}, Voice={voice}, Thinking={thinking_level}")
+    print(f"[*] New Live session requested: Model={model}, Voice={voice}, RAG={rag_mode}, Thinking={thinking_level}")
 
     # Build LiveConnectConfig
     connect_config_kwargs = {
@@ -141,9 +155,26 @@ async def websocket_live_endpoint(websocket: WebSocket):
         ),
     }
 
-    if system_instruction and system_instruction.strip():
+    # Custom UAE VAT RAG prompt
+    rag_system_prompt = (
+        "You are an expert UAE Federal Tax Authority (FTA) advisor and AI assistant equipped with real-time vector retrieval "
+        "over UAE VAT & Tax legislation, Cabinet Decisions, and Official FTA Guides. When official UAE tax references or citations "
+        "are provided, prioritize and ground your answers in those official FTA decisions and legislation. Be clear, accurate, "
+        "and cite the specific decision numbers or guides where helpful."
+    )
+
+    combined_instruction = ""
+    if rag_mode:
+        if system_instruction.strip():
+            combined_instruction = f"{rag_system_prompt}\n\nAdditional Instructions:\n{system_instruction.strip()}"
+        else:
+            combined_instruction = rag_system_prompt
+    else:
+        combined_instruction = system_instruction.strip()
+
+    if combined_instruction:
         connect_config_kwargs["system_instruction"] = types.Content(
-            parts=[types.Part.from_text(text=system_instruction.strip())]
+            parts=[types.Part.from_text(text=combined_instruction)]
         )
 
     config = types.LiveConnectConfig(**connect_config_kwargs)
@@ -153,19 +184,30 @@ async def websocket_live_endpoint(websocket: WebSocket):
             await websocket.send_json({
                 "type": "connected",
                 "model": model,
-                "voice": voice
+                "voice": voice,
+                "rag_mode": rag_mode,
+                "rag_vectors": rag_engine.index.ntotal if (rag_engine and rag_engine.index) else 0
             })
             print("[*] Gemini Live WebSocket connected.")
 
             async def browser_to_gemini():
                 """Reads user audio/video/text from browser and sends to Gemini"""
+                nonlocal rag_mode
                 try:
                     while True:
                         msg_text = await websocket.receive_text()
                         data = json.loads(msg_text)
                         msg_type = data.get("type")
 
-                        if msg_type == "audio":
+                        if msg_type == "toggle_rag":
+                            rag_mode = bool(data.get("enabled", True))
+                            print(f"[*] RAG mode toggled to: {rag_mode}")
+                            await websocket.send_json({
+                                "type": "rag_status",
+                                "enabled": rag_mode
+                            })
+
+                        elif msg_type == "audio":
                             # PCM 16kHz chunk from browser mic
                             raw_b64 = data.get("data", "")
                             if raw_b64:
@@ -184,8 +226,20 @@ async def websocket_live_endpoint(websocket: WebSocket):
                             # User typed text message
                             text = data.get("text", "")
                             if text:
+                                content_to_send = text
+                                if rag_mode and rag_engine and rag_engine.is_ready:
+                                    rag_context, docs, latency_ms = rag_engine.build_rag_context(text, top_k=3)
+                                    if docs:
+                                        await websocket.send_json({
+                                            "type": "rag_sources",
+                                            "query": text,
+                                            "sources": docs,
+                                            "latency_ms": latency_ms
+                                        })
+                                        content_to_send = f"{rag_context}\n\n[User Message]\n{text}"
+
                                 await session.send_client_content(
-                                    turns=[types.Content(role="user", parts=[types.Part.from_text(text=text)])],
+                                    turns=[types.Content(role="user", parts=[types.Part.from_text(text=content_to_send)])],
                                     turn_complete=True
                                 )
 
@@ -227,11 +281,22 @@ async def websocket_live_endpoint(websocket: WebSocket):
 
                                 # User speech-to-text transcript from Gemini
                                 if getattr(sc, "input_transcription", None) and sc.input_transcription.text:
+                                    is_finished = getattr(sc.input_transcription, "finished", False)
+                                    user_speech_text = sc.input_transcription.text
                                     await websocket.send_json({
                                         "type": "user_transcription",
-                                        "text": sc.input_transcription.text,
-                                        "finished": getattr(sc.input_transcription, "finished", False)
+                                        "text": user_speech_text,
+                                        "finished": is_finished
                                     })
+                                    if is_finished and rag_mode and rag_engine and rag_engine.is_ready:
+                                        docs, latency_ms = rag_engine.search(user_speech_text, top_k=3)
+                                        if docs:
+                                            await websocket.send_json({
+                                                "type": "rag_sources",
+                                                "query": user_speech_text,
+                                                "sources": docs,
+                                                "latency_ms": latency_ms
+                                            })
                                 elif getattr(sc, "interim_input_transcription", None) and sc.interim_input_transcription.text:
                                     await websocket.send_json({
                                         "type": "user_transcription",

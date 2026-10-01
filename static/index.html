@@ -48,6 +48,18 @@
 
     <!-- Header Actions -->
     <div class="nav-actions">
+      <!-- RAG Mode Toggle Pill -->
+      <div class="rag-toggle-pill" id="rag-toggle-pill" title="Toggle UAE Tax / VAT Retrieval-Augmented Generation (FAISS)">
+        <div class="rag-pill-info">
+          <span class="rag-pill-icon">⚖️</span>
+          <span class="rag-pill-label">UAE Tax RAG</span>
+        </div>
+        <label class="toggle-switch" for="toggle-rag-mode" title="Enable or disable vector retrieval">
+          <input type="checkbox" id="toggle-rag-mode" checked>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
       <!-- Quick Voice Switcher -->
       <div class="voice-pill">
         <span class="voice-icon">🎙️</span>
@@ -115,17 +127,20 @@
           </svg>
         </div>
         <h2>Start a Live Conversation</h2>
-        <p>Talk naturally, stream your camera, or share your screen. Gemini responds with ultra-low latency voice.</p>
+        <p>Talk naturally, stream your camera, or share your screen. With UAE Tax RAG active, responses are grounded in official legislation.</p>
 
         <div class="suggestions-row">
+          <button class="suggestion-chip" data-prompt="What are the conditions for input tax recovery on employee expenses under FTA Decision 17 of 2026?">
+            "Input tax on employee expenses"
+          </button>
+          <button class="suggestion-chip" data-prompt="Explain the reverse charge mechanism on metal scrap under Cabinet Decision 153">
+            "Reverse charge on metal scrap"
+          </button>
+          <button class="suggestion-chip" data-prompt="What are the VAT rules for electronic devices under Cabinet Decision 91 of 2023?">
+            "VAT on electronic devices"
+          </button>
           <button class="suggestion-chip" data-prompt="Explain how AI works in simple terms">
-            "Explain how AI works in simple terms"
-          </button>
-          <button class="suggestion-chip" data-prompt="Tell me an interesting science fact">
-            "Tell me an interesting science fact"
-          </button>
-          <button class="suggestion-chip" data-prompt="What are you capable of doing in real-time?">
-            "What can you do in real-time?"
+            "Explain how AI works"
           </button>
         </div>
       </div>
@@ -217,6 +232,35 @@
           <div class="canvas-footer">
             <span>16kHz In • 24kHz Out</span>
             <span id="audio-active-badge" class="badge-idle">IDLE</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- FAISS RAG Knowledge Base -->
+      <div class="drawer-field">
+        <label>FAISS Vector Knowledge Base</label>
+        <div class="rag-status-card">
+          <div class="rag-card-header">
+            <span class="rag-pulse-dot"></span>
+            <span class="rag-card-title">UAE Tax & VAT Legislation</span>
+            <span class="rag-card-badge" id="drawer-rag-badge">Active</span>
+          </div>
+          <p class="rag-card-desc">
+            Ultra-fast vector index powered by <code>faiss.index</code> (384-d BGE-small embeddings). Indexes 277 official Cabinet Decisions, FTA Decisions, and VAT Guides.
+          </p>
+          <div class="rag-stats-row">
+            <div class="rag-stat-item">
+              <span class="stat-num" id="drawer-vectors-count">2,475</span>
+              <span class="stat-lbl">Vectors</span>
+            </div>
+            <div class="rag-stat-item">
+              <span class="stat-num" id="drawer-docs-count">277</span>
+              <span class="stat-lbl">Documents</span>
+            </div>
+            <div class="rag-stat-item">
+              <span class="stat-num">&lt;60ms</span>
+              <span class="stat-lbl">Latency</span>
+            </div>
           </div>
         </div>
       </div>

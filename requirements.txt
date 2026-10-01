@@ -6,3 +6,6 @@ mss
 python-dotenv
 fastapi
 uvicorn
+faiss-cpu
+fastembed
+

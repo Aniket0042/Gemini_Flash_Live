@@ -45,6 +45,10 @@
   let currentModelTurnStartTime = null;
   let currentModelResponseTimeSpan = null;
 
+  // RAG Mode & Citations Tracking
+  let isRagEnabled = true;
+  let pendingRagSources = null;
+
   // DOM Elements
   const statusPill = document.getElementById('connection-status-pill');
   const statusText = document.getElementById('status-text');
@@ -58,6 +62,13 @@
   const btnToggleCamera = document.getElementById('btn-toggle-camera');
   const btnToggleScreen = document.getElementById('btn-toggle-screen');
   const btnClearChat = document.getElementById('btn-clear-chat');
+
+  // RAG Elements
+  const toggleRagMode = document.getElementById('toggle-rag-mode');
+  const ragTogglePill = document.getElementById('rag-toggle-pill');
+  const drawerRagBadge = document.getElementById('drawer-rag-badge');
+  const drawerVectorsCount = document.getElementById('drawer-vectors-count');
+  const drawerDocsCount = document.getElementById('drawer-docs-count');
 
   // Video PiP
   const pipContainer = document.getElementById('pip-video-container');
@@ -107,6 +118,17 @@
 
     btnSendMessage.addEventListener('click', sendTextMessage);
     btnClearChat.addEventListener('click', resetChat);
+
+    // RAG Mode Toggle
+    if (toggleRagMode) {
+      toggleRagMode.addEventListener('change', () => {
+        isRagEnabled = toggleRagMode.checked;
+        updateRagPillState(isRagEnabled);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'toggle_rag', enabled: isRagEnabled }));
+        }
+      });
+    }
 
     // Media streaming toggles
     btnToggleMic.addEventListener('click', toggleMicrophone);
@@ -186,6 +208,15 @@
           selectVoice.value = data.default_voice;
         }
       }
+      if (data.rag_vectors_count && drawerVectorsCount) {
+        drawerVectorsCount.textContent = Number(data.rag_vectors_count).toLocaleString();
+      }
+      if (data.rag_documents_count && drawerDocsCount) {
+        drawerDocsCount.textContent = Number(data.rag_documents_count).toLocaleString();
+      }
+      if (drawerRagBadge) {
+        drawerRagBadge.textContent = data.rag_available ? 'Active' : 'Offline';
+      }
     } catch (e) {
       console.warn('Could not load config:', e);
     }
@@ -225,14 +256,17 @@
     ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
+      const ragVal = toggleRagMode ? toggleRagMode.checked : true;
       const initPayload = {
         model: selectModel.value,
         voice: selectVoice.value,
         system_instruction: systemInstructionsInput.value,
         thinking_level: selectThinking.value,
         media_resolution: selectResolution.value,
+        rag_mode: ragVal,
       };
       ws.send(JSON.stringify(initPayload));
+      updateRagPillState(ragVal);
     };
 
     ws.onmessage = async (event) => {
@@ -282,6 +316,19 @@
     switch (msg.type) {
       case 'connected':
         updateStatus(true, 'Live');
+        if (typeof msg.rag_mode !== 'undefined') {
+          if (toggleRagMode) toggleRagMode.checked = msg.rag_mode;
+          updateRagPillState(msg.rag_mode);
+        }
+        break;
+
+      case 'rag_sources':
+        handleRagSources(msg.sources, msg.latency_ms);
+        break;
+
+      case 'rag_status':
+        if (toggleRagMode) toggleRagMode.checked = msg.enabled;
+        updateRagPillState(msg.enabled);
         break;
 
       // User's speech transcribed to text
@@ -343,6 +390,7 @@
     userQueryStartTime = null;
     currentModelTurnStartTime = null;
     currentModelResponseTimeSpan = null;
+    pendingRagSources = null;
     reconnectSession();
   }
 
@@ -412,6 +460,13 @@
 
       card.appendChild(header);
       card.appendChild(player);
+
+      // If RAG citations arrived, attach them right above text
+      if (pendingRagSources) {
+        attachRagSourcesToTurn(card, pendingRagSources.sources, pendingRagSources.latencyMs);
+        pendingRagSources = null;
+      }
+
       card.appendChild(content);
       card.appendChild(meta);
 
@@ -447,6 +502,7 @@
       currentModelAudioChunks = [];
       currentModelTurnStartTime = null;
       userQueryStartTime = null;
+      pendingRagSources = null;
     }
   }
 
@@ -1023,4 +1079,99 @@
     return btoa(binary);
   }
 
+  // ==========================================================================
+  // RAG RETRIEVAL & CITATIONS HELPERS
+  // ==========================================================================
+
+  function updateRagPillState(enabled) {
+    if (!ragTogglePill) return;
+    if (enabled) {
+      ragTogglePill.classList.add('active');
+    } else {
+      ragTogglePill.classList.remove('active');
+    }
+  }
+
+  function handleRagSources(sources, latencyMs) {
+    if (!sources || sources.length === 0) return;
+    if (currentModelTurnElement) {
+      attachRagSourcesToTurn(currentModelTurnElement, sources, latencyMs);
+    } else {
+      pendingRagSources = { sources, latencyMs };
+    }
+  }
+
+  function attachRagSourcesToTurn(cardElement, sources, latencyMs) {
+    if (!cardElement || !sources || sources.length === 0) return;
+    if (cardElement.querySelector('.rag-sources-card')) return;
+
+    const sourcesCard = document.createElement('div');
+    sourcesCard.className = 'rag-sources-card';
+
+    const count = sources.length;
+    const latStr = latencyMs ? ` · ${latencyMs}ms` : '';
+
+    sourcesCard.innerHTML = `
+      <div class="rag-sources-header" title="Click to collapse / expand retrieved legislation">
+        <div class="rag-sources-title-group">
+          <span>📚</span>
+          <strong>Retrieved UAE Legislation</strong>
+          <span class="rag-sources-badge">${count} source${count > 1 ? 's' : ''}${latStr}</span>
+        </div>
+        <span class="rag-sources-chevron">▼</span>
+      </div>
+      <div class="rag-sources-list"></div>
+    `;
+
+    const list = sourcesCard.querySelector('.rag-sources-list');
+
+    sources.forEach((doc) => {
+      const item = document.createElement('div');
+      item.className = 'rag-source-item';
+
+      const matchPercent = doc.similarity ? `${Math.round(doc.similarity * 100)}% match` : '';
+      const dateText = doc.issue_date && doc.issue_date !== 'NA' ? doc.issue_date : '';
+      const url = doc.url || '';
+      const hasUrl = url && url.startsWith('http');
+
+      item.innerHTML = `
+        <div class="rag-source-top">
+          <span class="rag-source-doc-title">${escapeHtml(doc.title)}</span>
+          ${matchPercent ? `<span class="rag-source-score">${matchPercent}</span>` : ''}
+        </div>
+        <div class="rag-source-meta-row">
+          ${doc.category ? `<span class="rag-tag">${escapeHtml(doc.category)}</span>` : ''}
+          ${doc.section ? `<span class="rag-tag">${escapeHtml(doc.section)}</span>` : ''}
+          ${dateText ? `<span>🗓️ ${escapeHtml(dateText)}</span>` : ''}
+          ${hasUrl ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="rag-link-btn" title="View official government PDF / decision">Official FTA Doc ↗</a>` : ''}
+        </div>
+      `;
+      list.appendChild(item);
+    });
+
+    const header = sourcesCard.querySelector('.rag-sources-header');
+    header.addEventListener('click', () => {
+      sourcesCard.classList.toggle('collapsed');
+    });
+
+    const content = cardElement.querySelector('.turn-content');
+    if (content) {
+      cardElement.insertBefore(sourcesCard, content);
+    } else {
+      cardElement.appendChild(sourcesCard);
+    }
+    scrollToBottom();
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
 })();
+
