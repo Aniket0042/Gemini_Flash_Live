@@ -181,13 +181,16 @@ async def websocket_live_endpoint(websocket: WebSocket):
 
     try:
         async with client.aio.live.connect(model=model, config=config) as session:
-            await websocket.send_json({
-                "type": "connected",
-                "model": model,
-                "voice": voice,
-                "rag_mode": rag_mode,
-                "rag_vectors": rag_engine.index.ntotal if (rag_engine and rag_engine.index) else 0
-            })
+            try:
+                await websocket.send_json({
+                    "type": "connected",
+                    "model": model,
+                    "voice": voice,
+                    "rag_mode": rag_mode,
+                    "rag_vectors": rag_engine.index.ntotal if (rag_engine and rag_engine.index) else 0
+                })
+            except Exception:
+                return
             print("[*] Gemini Live WebSocket connected.")
 
             async def browser_to_gemini():
@@ -360,6 +363,11 @@ async def websocket_live_endpoint(websocket: WebSocket):
 
 # Mount static directory
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+@app.get("/favicon.ico")
+async def favicon():
+    from fastapi import Response
+    return Response(status_code=204)
 
 @app.get("/")
 async def serve_index():
