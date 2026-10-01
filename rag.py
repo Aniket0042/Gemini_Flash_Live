@@ -12,9 +12,16 @@ from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
 import faiss
 from fastembed import TextEmbedding
+import re
 
 logger = logging.getLogger("rag")
 logging.basicConfig(level=logging.INFO)
+
+def clean_str(s: str) -> str:
+    if not s:
+        return ""
+    s = s.replace('\u2013', '-').replace('\u2014', '-').replace('\u2018', "'").replace('\u2019', "'").replace('\u201c', '"').replace('\u201d', '"').replace('\ufffd', ' ')
+    return re.sub(r'[^\x20-\x7E]+', ' ', s).strip()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INDEX_PATH = os.path.join(BASE_DIR, "faiss.index")
@@ -116,8 +123,11 @@ class RAGEngine:
 
         for i, d in enumerate(docs, 1):
             date_info = f" (Issued: {d['issue_date']})" if d['issue_date'] and d['issue_date'] != 'NA' else ""
-            lines.append(f"{i}. Title: {d['title']}{date_info}")
-            lines.append(f"   Category: {d['category']} | Section: {d['section']}")
+            clean_title = clean_str(d['title'])
+            clean_cat = clean_str(d['category'])
+            clean_sec = clean_str(d['section'])
+            lines.append(f"{i}. Title: {clean_title}{date_info}")
+            lines.append(f"   Category: {clean_cat} | Section: {clean_sec}")
             if d['url']:
                 lines.append(f"   Official URL: {d['url']}")
             lines.append("")
