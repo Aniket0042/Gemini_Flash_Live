@@ -40,6 +40,11 @@
   let currentModelTextSpan = null;
   let currentModelAudioChunks = [];
 
+  // Latency & Response Time Tracking
+  let userQueryStartTime = null;
+  let currentModelTurnStartTime = null;
+  let currentModelResponseTimeSpan = null;
+
   // DOM Elements
   const statusPill = document.getElementById('connection-status-pill');
   const statusText = document.getElementById('status-text');
@@ -105,7 +110,7 @@
 
     // Media streaming toggles
     btnToggleMic.addEventListener('click', toggleMicrophone);
-    btnToggleCamera.addEventListener('click', toggleCamera);
+    if (btnToggleCamera) btnToggleCamera.addEventListener('click', toggleCamera);
     if (btnToggleScreen) btnToggleScreen.addEventListener('click', toggleScreenShare);
 
     // Video PiP close
@@ -281,6 +286,7 @@
 
       // User's speech transcribed to text
       case 'user_transcription':
+        userQueryStartTime = performance.now();
         ensureUserTurnCard();
         currentUserTextSpan.textContent = msg.text;
         scrollToBottom();
@@ -334,6 +340,9 @@
     turnsList.innerHTML = '';
     emptyState.classList.remove('hidden');
     haltAudioPlayback();
+    userQueryStartTime = null;
+    currentModelTurnStartTime = null;
+    currentModelResponseTimeSpan = null;
     reconnectSession();
   }
 
@@ -357,9 +366,21 @@
     }
   }
 
+  function formatLatency(ms) {
+    if (ms < 1000) {
+      return `${ms} ms`;
+    }
+    return `${(ms / 1000).toFixed(2)} s`;
+  }
+
   function ensureModelTurnCard() {
     emptyState.classList.add('hidden');
     if (!currentModelTurnElement) {
+      const now = performance.now();
+      currentModelTurnStartTime = now;
+      const baseTime = userQueryStartTime || now;
+      const latencyMs = Math.max(10, Math.round(now - baseTime));
+
       const card = document.createElement('div');
       card.className = 'turn-card model-turn';
 
@@ -376,13 +397,28 @@
       const textSpan = document.createElement('span');
       content.appendChild(textSpan);
 
+      // Response Time Metadata Pill
+      const meta = document.createElement('div');
+      meta.className = 'turn-meta';
+      meta.innerHTML = `
+        <span class="meta-time" title="Latency from prompt to first response chunk">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+          Response time: <strong class="time-val">${formatLatency(latencyMs)}</strong>
+        </span>
+      `;
+
       card.appendChild(header);
       card.appendChild(player);
       card.appendChild(content);
+      card.appendChild(meta);
 
       turnsList.appendChild(card);
       currentModelTurnElement = card;
       currentModelTextSpan = textSpan;
+      currentModelResponseTimeSpan = meta.querySelector('.time-val');
       currentModelAudioChunks = [];
     }
   }
@@ -396,9 +432,21 @@
         attachAudioBlobToPlayer(currentModelTurnElement, currentModelAudioChunks, 24000);
       }
 
+      if (currentModelTurnStartTime && currentModelResponseTimeSpan) {
+        const totalDurationMs = Math.round(performance.now() - (userQueryStartTime || currentModelTurnStartTime));
+        const metaSpan = currentModelTurnElement.querySelector('.meta-time');
+        if (metaSpan) {
+          const latencyText = currentModelResponseTimeSpan.textContent;
+          metaSpan.title = `Latency: ${latencyText} • Total generation: ${formatLatency(totalDurationMs)}`;
+        }
+      }
+
       currentModelTurnElement = null;
       currentModelTextSpan = null;
+      currentModelResponseTimeSpan = null;
       currentModelAudioChunks = [];
+      currentModelTurnStartTime = null;
+      userQueryStartTime = null;
     }
   }
 
@@ -504,6 +552,10 @@
     const text = chatInput.value.trim();
     if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
 
+    userQueryStartTime = performance.now();
+    currentModelTurnStartTime = null;
+    currentModelResponseTimeSpan = null;
+
     appendUserTurn(text);
     ws.send(JSON.stringify({ type: 'text', text: text }));
 
@@ -578,6 +630,7 @@
             }
             const transcript = (final || interim).trim();
             if (transcript) {
+              userQueryStartTime = performance.now();
               ensureUserTurnCard();
               currentUserTextSpan.textContent = transcript;
               scrollToBottom();
@@ -740,7 +793,7 @@
       pipVideo.srcObject = videoMediaStream;
       pipContainer.classList.remove('hidden');
       pipModeLabel.textContent = '● LIVE CAMERA';
-      btnToggleCamera.classList.add('active-cam');
+      if (btnToggleCamera) btnToggleCamera.classList.add('active-cam');
       isCamActive = true;
 
       startFrameCaptureLoop();
@@ -752,7 +805,7 @@
 
   function stopCamera() {
     isCamActive = false;
-    btnToggleCamera.classList.remove('active-cam');
+    if (btnToggleCamera) btnToggleCamera.classList.remove('active-cam');
     stopFrameCaptureLoop();
     if (videoMediaStream) {
       videoMediaStream.getTracks().forEach((t) => t.stop());
